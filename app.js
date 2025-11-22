@@ -1,3 +1,8 @@
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.6.0';
+
+// Skip local model check to avoid errors in some environments
+env.allowLocalModels = false;
+
 // ========================================
 // STATE MANAGEMENT
 // ========================================
@@ -10,7 +15,9 @@ const state = {
     currentAudioFile: null,
     transcriptText: '',
     translationText: '',
-    translationDebounce: null
+    translationDebounce: null,
+    transcriber: null, // For file upload (Whisper)
+    isModelLoading: false
 };
 
 // ========================================
@@ -74,9 +81,9 @@ function checkSpeechRecognitionSupport() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-        showToast('⚠️ Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.', 'warning');
+        showToast('⚠️ Live recording not supported in this browser. Use Chrome/Edge.', 'warning');
         elements.recordBtn.disabled = true;
-        elements.recordStatus.textContent = 'Speech recognition not supported';
+        elements.recordStatus.textContent = 'Not supported';
     } else {
         initializeSpeechRecognition();
     }
@@ -129,30 +136,12 @@ function initializeSpeechRecognition() {
 
     state.recognition.onerror = (event) => {
         console.error('Speech recognition error:', event.error);
-
-        let errorMessage = 'An error occurred';
-        switch (event.error) {
-            case 'no-speech':
-                errorMessage = 'No speech detected. Please try again.';
-                break;
-            case 'audio-capture':
-                errorMessage = 'No microphone found. Please check your audio settings.';
-                break;
-            case 'not-allowed':
-                errorMessage = 'Microphone access denied. Please allow microphone access.';
-                break;
-            case 'network':
-                errorMessage = 'Network error. Please check your internet connection.';
-                break;
-        }
-
-        showToast('❌ ' + errorMessage, 'error');
         stopRecording();
+        showToast('❌ Recording error: ' + event.error, 'error');
     };
 
     state.recognition.onend = () => {
         if (state.isRecording) {
-            // Restart recognition if it's supposed to be recording
             try {
                 state.recognition.start();
             } catch (e) {
@@ -160,6 +149,30 @@ function initializeSpeechRecognition() {
             }
         }
     };
+}
+
+// ========================================
+// WHISPER AI SETUP (For Files)
+// ========================================
+async function initializeWhisper() {
+    if (state.transcriber) return state.transcriber;
+
+    try {
+        state.isModelLoading = true;
+        showToast('📥 Downloading AI model (this happens once)...', 'info');
+
+        // Use a smaller model for performance on mini PC
+        state.transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny');
+
+        state.isModelLoading = false;
+        showToast('✅ AI Model ready!', 'success');
+        return state.transcriber;
+    } catch (error) {
+        console.error('Model loading error:', error);
+        state.isModelLoading = false;
+        showToast('❌ Failed to load AI model', 'error');
+        return null;
+    }
 }
 
 // ========================================
@@ -172,7 +185,7 @@ function debounceTranslation(text) {
 
     state.translationDebounce = setTimeout(() => {
         translateText(text);
-    }, 800); // Wait 800ms after user stops speaking
+    }, 800);
 }
 
 async function translateText(text) {
@@ -181,7 +194,6 @@ async function translateText(text) {
         return;
     }
 
-    // Only translate if language is Bosnian
     if (elements.languageSelect.value !== 'bs-BA') {
         elements.translationText.textContent = text;
         state.translationText = text;
@@ -190,10 +202,7 @@ async function translateText(text) {
 
     try {
         elements.translationStatus.classList.add('active');
-
-        // Using MyMemory API - free translation service
         const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=bs|en`;
-
         const response = await fetch(url);
         const data = await response.json();
 
@@ -201,14 +210,9 @@ async function translateText(text) {
             const translation = data.responseData.translatedText;
             state.translationText = translation;
             elements.translationText.textContent = translation;
-        } else {
-            throw new Error('Translation failed');
         }
     } catch (error) {
         console.error('Translation error:', error);
-        showToast('⚠️ Translation service temporarily unavailable', 'warning');
-        elements.translationText.textContent = text; // Fallback to original
-        state.translationText = text;
     } finally {
         elements.translationStatus.classList.remove('active');
     }
@@ -227,106 +231,65 @@ function updateLanguageLabels() {
 // EVENT LISTENERS
 // ========================================
 function setupEventListeners() {
-    // Mode switching
     elements.recordModeBtn.addEventListener('click', () => switchMode('record'));
     elements.uploadModeBtn.addEventListener('click', () => switchMode('upload'));
-
-    // Recording
     elements.recordBtn.addEventListener('click', toggleRecording);
 
-    // Language change
     elements.languageSelect.addEventListener('change', (e) => {
-        if (state.recognition) {
-            state.recognition.lang = e.target.value;
-        }
+        if (state.recognition) state.recognition.lang = e.target.value;
         updateLanguageLabels();
-        showToast('🌐 Language changed', 'success');
     });
 
-    // File upload
     elements.uploadZone.addEventListener('click', () => elements.fileInput.click());
     elements.fileInput.addEventListener('change', handleFileSelect);
-
-    // Drag and drop
     elements.uploadZone.addEventListener('dragover', handleDragOver);
     elements.uploadZone.addEventListener('dragleave', handleDragLeave);
     elements.uploadZone.addEventListener('drop', handleDrop);
 
-    // Transcribe button
     elements.transcribeBtn.addEventListener('click', transcribeAudioFile);
 
-    // Output actions
     elements.copyBtn.addEventListener('click', copyTranscript);
     elements.downloadBtn.addEventListener('click', downloadTranscript);
     elements.clearBtn.addEventListener('click', clearTranscript);
 
-    // Transcript editing
     elements.transcriptText.addEventListener('input', () => {
         state.transcriptText = elements.transcriptText.textContent;
         updateStats();
-
-        // Translate edited text if Bosnian
         if (elements.languageSelect.value === 'bs-BA') {
             debounceTranslation(state.transcriptText);
         }
     });
-
-    elements.translationText.addEventListener('input', () => {
-        state.translationText = elements.translationText.textContent;
-    });
 }
 
 // ========================================
-// MODE SWITCHING
+// MODE SWITCHING & RECORDING
 // ========================================
 function switchMode(mode) {
     if (state.currentMode === mode) return;
-
     state.currentMode = mode;
-
-    // Update buttons
     elements.recordModeBtn.classList.toggle('active', mode === 'record');
     elements.uploadModeBtn.classList.toggle('active', mode === 'upload');
-
-    // Update sections
     elements.recordMode.classList.toggle('active', mode === 'record');
     elements.uploadMode.classList.toggle('active', mode === 'upload');
-
-    // Stop recording if switching away from record mode
-    if (mode !== 'record' && state.isRecording) {
-        stopRecording();
-    }
+    if (mode !== 'record' && state.isRecording) stopRecording();
 }
 
-// ========================================
-// RECORDING FUNCTIONS
-// ========================================
 function toggleRecording() {
-    if (state.isRecording) {
-        stopRecording();
-    } else {
-        startRecording();
-    }
+    state.isRecording ? stopRecording() : startRecording();
 }
 
 function startRecording() {
-    if (!state.recognition) {
-        showToast('❌ Speech recognition not available', 'error');
-        return;
-    }
-
+    if (!state.recognition) return;
     try {
         state.recognition.start();
         showToast('🎤 Recording started', 'success');
     } catch (e) {
-        console.error('Failed to start recognition:', e);
-        showToast('❌ Failed to start recording', 'error');
+        showToast('❌ Failed to start', 'error');
     }
 }
 
 function stopRecording() {
     if (!state.recognition || !state.isRecording) return;
-
     state.isRecording = false;
     state.recognition.stop();
     elements.recordBtn.classList.remove('recording');
@@ -342,10 +305,7 @@ function startTimer() {
 }
 
 function stopTimer() {
-    if (state.recordingTimer) {
-        clearInterval(state.recordingTimer);
-        state.recordingTimer = null;
-    }
+    clearInterval(state.recordingTimer);
     elements.recordTimer.textContent = '0:00';
 }
 
@@ -358,67 +318,31 @@ function updateTimer() {
 }
 
 // ========================================
-// FILE UPLOAD FUNCTIONS
+// FILE UPLOAD & WHISPER TRANSCRIPTION
 // ========================================
-function handleDragOver(e) {
-    e.preventDefault();
-    elements.uploadZone.classList.add('drag-over');
-}
-
-function handleDragLeave(e) {
-    e.preventDefault();
-    elements.uploadZone.classList.remove('drag-over');
-}
-
+function handleDragOver(e) { e.preventDefault(); elements.uploadZone.classList.add('drag-over'); }
+function handleDragLeave(e) { e.preventDefault(); elements.uploadZone.classList.remove('drag-over'); }
 function handleDrop(e) {
     e.preventDefault();
     elements.uploadZone.classList.remove('drag-over');
-
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-        handleFile(files[0]);
-    }
+    if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
 }
-
 function handleFileSelect(e) {
-    const files = e.target.files;
-    if (files.length > 0) {
-        handleFile(files[0]);
-    }
+    if (e.target.files.length > 0) handleFile(e.target.files[0]);
 }
 
 function handleFile(file) {
-    // Check if it's an audio file
     if (!file.type.startsWith('audio/')) {
         showToast('❌ Please select an audio file', 'error');
         return;
     }
-
     state.currentAudioFile = file;
-
-    // Update UI
     elements.fileName.textContent = file.name;
     elements.fileSize.textContent = formatFileSize(file.size);
-
-    // Show progress section
     elements.uploadZone.style.display = 'none';
     elements.uploadProgress.classList.add('active');
-
-    // Simulate file upload progress
-    simulateProgress();
-}
-
-function simulateProgress() {
-    let progress = 0;
-    const interval = setInterval(() => {
-        progress += 10;
-        elements.progressFill.style.width = `${progress}%`;
-
-        if (progress >= 100) {
-            clearInterval(interval);
-            showToast('✅ File ready - Note: Live recording recommended for best results', 'success');
-        }
-    }, 100);
+    elements.progressFill.style.width = '100%';
+    showToast('✅ File ready to transcribe', 'success');
 }
 
 function formatFileSize(bytes) {
@@ -429,28 +353,21 @@ function formatFileSize(bytes) {
     return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
 }
 
-// ========================================
-// TRANSCRIPTION FUNCTIONS
-// ========================================
 async function transcribeAudioFile() {
-    // Clear previous text
+    // Reset UI
     elements.transcriptText.textContent = '';
     elements.translationText.textContent = '';
     state.transcriptText = '';
-    state.translationText = '';
-
-    showToast('🔊 Playing audio... Ensure your MICROPHONE can hear your SPEAKERS!', 'info');
 
     if (!state.currentAudioFile) {
-        showToast('❌ No audio file selected', 'error');
+        showToast('❌ No file selected', 'error');
         return;
     }
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-        showToast('❌ Speech recognition not supported. Try live recording instead.', 'error');
-        return;
+    // Initialize Whisper if not ready
+    if (!state.transcriber) {
+        const transcriber = await initializeWhisper();
+        if (!transcriber) return;
     }
 
     elements.transcribeBtn.disabled = true;
@@ -460,75 +377,41 @@ async function transcribeAudioFile() {
             <path d="M10 3C10.5523 3 11 3.44772 11 4V6C11 6.55228 10.5523 7 10 7C9.44772 7 9 6.55228 9 6V4C9 3.44772 9.44772 3 10 3Z"/>
             <path opacity="0.3" d="M10 13C10.5523 13 11 13.4477 11 14V16C11 16.5523 10.5523 17 10 17C9.44772 17 9 16.5523 9 16V14C9 13.4477 9.44772 13 10 13Z"/>
         </svg>
-        Listening... (Unplug headphones!)
+        AI Transcribing... (No speakers needed)
     `;
 
     try {
-        const audio = new Audio();
-        const fileURL = URL.createObjectURL(state.currentAudioFile);
-        audio.src = fileURL;
-        audio.volume = 1.0; // Ensure max volume
+        // Convert file to audio buffer
+        const arrayBuffer = await state.currentAudioFile.arrayBuffer();
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = elements.languageSelect.value;
+        // Get channel data (Whisper expects mono, 16kHz usually, but pipeline handles resampling)
+        let audioData = audioBuffer.getChannelData(0); // Get first channel
 
-        let transcript = '';
-        let hasDetectedSpeech = false;
-
-        // Detection timeout
-        const speechTimeout = setTimeout(() => {
-            if (!hasDetectedSpeech) {
-                showToast('⚠️ No speech detected yet. Unplug headphones and turn up volume!', 'warning');
-            }
-        }, 4000);
-
-        recognition.onresult = (event) => {
-            hasDetectedSpeech = true;
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-                const transcriptChunk = event.results[i][0].transcript;
-
-                if (event.results[i].isFinal) {
-                    transcript += transcriptChunk + ' ';
-                    state.transcriptText += transcriptChunk + ' ';
-                    updateTranscript(state.transcriptText);
-
-                    // Translate in real-time if Bosnian
-                    if (elements.languageSelect.value === 'bs-BA') {
-                        debounceTranslation(state.transcriptText);
-                    }
-                } else {
-                    // Show interim results immediately
-                    updateTranscript(state.transcriptText + transcriptChunk);
-                }
-            }
-        };
-
-        recognition.start();
-        await audio.play();
-
-        await new Promise((resolve) => {
-            audio.onended = resolve;
+        // Run transcription
+        const output = await state.transcriber(audioData, {
+            chunk_length_s: 30,
+            stride_length_s: 5,
+            language: elements.languageSelect.value === 'bs-BA' ? 'bosnian' : 'english',
+            task: 'transcribe'
         });
 
-        clearTimeout(speechTimeout);
+        const transcript = output.text;
+        state.transcriptText = transcript;
+        updateTranscript(transcript);
 
-        setTimeout(() => {
-            recognition.stop();
+        // Translate if Bosnian
+        if (elements.languageSelect.value === 'bs-BA') {
+            debounceTranslation(transcript);
+        }
 
-            if (transcript) {
-                showToast('✅ Transcription complete!', 'success');
-            } else {
-                showToast('⚠️ No speech detected. This feature requires your mic to hear the speakers.', 'warning');
-            }
-
-            resetTranscribeButton();
-        }, 1000);
+        showToast('✅ Transcription complete!', 'success');
 
     } catch (error) {
         console.error('Transcription error:', error);
-        showToast('❌ Error. Please use LIVE RECORDING for best results.', 'error');
+        showToast('❌ Transcription failed: ' + error.message, 'error');
+    } finally {
         resetTranscribeButton();
     }
 }
@@ -545,9 +428,6 @@ function resetTranscribeButton() {
     `;
 }
 
-// ========================================
-// OUTPUT FUNCTIONS
-// ========================================
 function updateTranscript(text) {
     elements.transcriptText.textContent = text;
     updateStats();
@@ -555,104 +435,57 @@ function updateTranscript(text) {
 
 function updateStats() {
     const text = elements.transcriptText.textContent || '';
-    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
-    const chars = text.length;
-
-    elements.wordCount.textContent = words;
-    elements.charCount.textContent = chars;
+    elements.wordCount.textContent = text.trim() ? text.trim().split(/\s+/).length : 0;
+    elements.charCount.textContent = text.length;
 }
 
 function copyTranscript() {
-    const originalText = elements.transcriptText.textContent;
-    const translatedText = elements.translationText.textContent;
+    const original = elements.transcriptText.textContent;
+    const translated = elements.translationText.textContent;
+    const text = (elements.languageSelect.value === 'bs-BA' && translated)
+        ? `Original:\n${original}\n\nTranslation:\n${translated}`
+        : original;
 
-    let textToCopy = '';
-    if (elements.languageSelect.value === 'bs-BA' && translatedText) {
-        textToCopy = `Original (Bosnian):\n${originalText}\n\nEnglish Translation:\n${translatedText}`;
-    } else {
-        textToCopy = originalText;
-    }
-
-    if (!textToCopy) {
-        showToast('⚠️ No text to copy', 'warning');
-        return;
-    }
-
-    navigator.clipboard.writeText(textToCopy).then(() => {
-        showToast('✅ Copied to clipboard!', 'success');
-    }).catch(() => {
-        showToast('❌ Failed to copy', 'error');
-    });
+    navigator.clipboard.writeText(text)
+        .then(() => showToast('✅ Copied!', 'success'))
+        .catch(() => showToast('❌ Failed to copy', 'error'));
 }
 
 function downloadTranscript() {
-    const originalText = elements.transcriptText.textContent;
-    const translatedText = elements.translationText.textContent;
+    const original = elements.transcriptText.textContent;
+    const translated = elements.translationText.textContent;
+    const text = (elements.languageSelect.value === 'bs-BA' && translated)
+        ? `Original:\n${original}\n\nTranslation:\n${translated}`
+        : original;
 
-    let textToDownload = '';
-    if (elements.languageSelect.value === 'bs-BA' && translatedText) {
-        textToDownload = `Original (Bosnian):\n${originalText}\n\nEnglish Translation:\n${translatedText}`;
-    } else {
-        textToDownload = originalText;
-    }
-
-    if (!textToDownload) {
-        showToast('⚠️ No text to download', 'warning');
-        return;
-    }
-
-    const blob = new Blob([textToDownload], { type: 'text/plain' });
+    const blob = new Blob([text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `transcript-${new Date().getTime()}.txt`;
+    a.download = `transcript-${Date.now()}.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    showToast('✅ Downloaded!', 'success');
 }
 
 function clearTranscript() {
-    if (!elements.transcriptText.textContent) {
-        return;
-    }
-
-    if (confirm('Are you sure you want to clear the transcription?')) {
+    if (confirm('Clear all text?')) {
         elements.transcriptText.textContent = '';
         elements.translationText.textContent = '';
         state.transcriptText = '';
-        state.translationText = '';
         updateStats();
-        showToast('🗑️ Transcript cleared', 'success');
     }
 }
 
-// ========================================
-// TOAST NOTIFICATIONS
-// ========================================
 function showToast(message, type = 'success') {
     elements.toastMessage.textContent = message;
     elements.toast.classList.add('show');
-
-    // Auto hide after 4 seconds
-    setTimeout(() => {
-        elements.toast.classList.remove('show');
-    }, 4000);
+    setTimeout(() => elements.toast.classList.remove('show'), 4000);
 }
 
-// ========================================
-// INITIALIZE APP
-// ========================================
 document.addEventListener('DOMContentLoaded', init);
 
-// Add spin animation for loading icon
+// Add spin animation
 const style = document.createElement('style');
-style.textContent = `
-    @keyframes spin {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
-    }
-`;
+style.textContent = `@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`;
 document.head.appendChild(style);
