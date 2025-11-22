@@ -159,10 +159,10 @@ async function initializeWhisper() {
 
     try {
         state.isModelLoading = true;
-        showToast('📥 Downloading AI model (this happens once)...', 'info');
+        showToast('📥 Downloading AI model (approx 200MB)...', 'info');
 
-        // Use a smaller model for performance on mini PC
-        state.transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny');
+        // Upgrade to 'base' model for better Bosnian accuracy
+        state.transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-base');
 
         state.isModelLoading = false;
         showToast('✅ AI Model ready!', 'success');
@@ -375,28 +375,35 @@ async function transcribeAudioFile() {
     updateProgress(0, 'Starting...');
 
     try {
-        // 1. Decode Audio
-        updateProgress(0, 'Decoding audio...');
+        // 1. Decode and Resample to 16kHz (CRITICAL for Whisper)
+        updateProgress(0, 'Resampling audio...');
         const arrayBuffer = await state.currentAudioFile.arrayBuffer();
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-        // Get raw audio data (channel 0)
-        const fullAudioData = audioBuffer.getChannelData(0);
-        const sampleRate = audioBuffer.sampleRate;
-        const totalDuration = audioBuffer.duration;
+        // Create OfflineAudioContext at 16kHz
+        const originalCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const decodedData = await originalCtx.decodeAudioData(arrayBuffer);
 
-        // 2. Process in chunks (Whisper likes 30s chunks)
+        const offlineCtx = new OfflineAudioContext(1, decodedData.duration * 16000, 16000);
+        const source = offlineCtx.createBufferSource();
+        source.buffer = decodedData;
+        source.connect(offlineCtx.destination);
+        source.start();
+
+        const resampledBuffer = await offlineCtx.startRendering();
+        const audioData = resampledBuffer.getChannelData(0);
+
+        // 2. Process in chunks
         const CHUNK_DURATION = 30; // seconds
-        const CHUNK_SAMPLES = CHUNK_DURATION * sampleRate;
-        const totalChunks = Math.ceil(totalDuration / CHUNK_DURATION);
+        const SAMPLE_RATE = 16000;
+        const CHUNK_SAMPLES = CHUNK_DURATION * SAMPLE_RATE;
+        const totalChunks = Math.ceil(audioData.length / CHUNK_SAMPLES);
 
-        showToast(`🚀 Processing ${Math.ceil(totalDuration)}s of audio...`, 'info');
+        showToast(`🚀 Processing ${Math.ceil(decodedData.duration)}s of audio...`, 'info');
 
         for (let i = 0; i < totalChunks; i++) {
             const startSample = i * CHUNK_SAMPLES;
-            const endSample = Math.min((i + 1) * CHUNK_SAMPLES, fullAudioData.length);
-            const chunkData = fullAudioData.slice(startSample, endSample);
+            const endSample = Math.min((i + 1) * CHUNK_SAMPLES, audioData.length);
+            const chunkData = audioData.slice(startSample, endSample);
 
             // Update UI Progress
             const progress = Math.round((i / totalChunks) * 100);
@@ -411,19 +418,15 @@ async function transcribeAudioFile() {
             const chunkText = output.text.trim();
 
             if (chunkText) {
-                // Append text
                 state.transcriptText += chunkText + ' ';
                 updateTranscript(state.transcriptText);
 
-                // Translate immediately
                 if (elements.languageSelect.value === 'bs-BA') {
-                    // We translate the *new chunk* and append it to translation state
-                    // This avoids re-translating the whole growing text every 30s
                     translateChunk(chunkText);
                 }
             }
 
-            // Small pause to let UI breathe
+            // Yield to UI thread
             await new Promise(r => setTimeout(r, 10));
         }
 
