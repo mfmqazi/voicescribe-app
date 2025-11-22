@@ -372,47 +372,108 @@ async function transcribeAudioFile() {
 
     elements.transcribeBtn.disabled = true;
     elements.transcribeBtn.classList.add('processing');
+    updateProgress(0, 'Starting...');
+
+    try {
+        // 1. Decode Audio
+        updateProgress(0, 'Decoding audio...');
+        const arrayBuffer = await state.currentAudioFile.arrayBuffer();
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+        // Get raw audio data (channel 0)
+        const fullAudioData = audioBuffer.getChannelData(0);
+        const sampleRate = audioBuffer.sampleRate;
+        const totalDuration = audioBuffer.duration;
+
+        // 2. Process in chunks (Whisper likes 30s chunks)
+        const CHUNK_DURATION = 30; // seconds
+        const CHUNK_SAMPLES = CHUNK_DURATION * sampleRate;
+        const totalChunks = Math.ceil(totalDuration / CHUNK_DURATION);
+
+        showToast(`🚀 Processing ${Math.ceil(totalDuration)}s of audio...`, 'info');
+
+        for (let i = 0; i < totalChunks; i++) {
+            const startSample = i * CHUNK_SAMPLES;
+            const endSample = Math.min((i + 1) * CHUNK_SAMPLES, fullAudioData.length);
+            const chunkData = fullAudioData.slice(startSample, endSample);
+
+            // Update UI Progress
+            const progress = Math.round((i / totalChunks) * 100);
+            updateProgress(progress, `Transcribing ${progress}%...`);
+
+            // Transcribe Chunk
+            const output = await state.transcriber(chunkData, {
+                language: elements.languageSelect.value === 'bs-BA' ? 'bosnian' : 'english',
+                task: 'transcribe'
+            });
+
+            const chunkText = output.text.trim();
+
+            if (chunkText) {
+                // Append text
+                state.transcriptText += chunkText + ' ';
+                updateTranscript(state.transcriptText);
+
+                // Translate immediately
+                if (elements.languageSelect.value === 'bs-BA') {
+                    // We translate the *new chunk* and append it to translation state
+                    // This avoids re-translating the whole growing text every 30s
+                    translateChunk(chunkText);
+                }
+            }
+
+            // Small pause to let UI breathe
+            await new Promise(r => setTimeout(r, 10));
+        }
+
+        updateProgress(100, 'Complete!');
+        showToast('✅ Transcription complete!', 'success');
+
+    } catch (error) {
+        console.error('Transcription error:', error);
+        showToast('❌ Failed: ' + error.message, 'error');
+    } finally {
+        setTimeout(resetTranscribeButton, 1000);
+    }
+}
+
+function updateProgress(percent, text) {
     elements.transcribeBtn.innerHTML = `
         <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" style="animation: spin 1s linear infinite;">
             <path d="M10 3C10.5523 3 11 3.44772 11 4V6C11 6.55228 10.5523 7 10 7C9.44772 7 9 6.55228 9 6V4C9 3.44772 9.44772 3 10 3Z"/>
             <path opacity="0.3" d="M10 13C10.5523 13 11 13.4477 11 14V16C11 16.5523 10.5523 17 10 17C9.44772 17 9 16.5523 9 16V14C9 13.4477 9.44772 13 10 13Z"/>
         </svg>
-        AI Transcribing... (No speakers needed)
+        ${text}
     `;
+    // Also update the visual progress bar if visible
+    if (elements.uploadProgress.classList.contains('active')) {
+        elements.progressFill.style.width = `${percent}%`;
+    }
+}
+
+async function translateChunk(text) {
+    if (!text) return;
 
     try {
-        // Convert file to audio buffer
-        const arrayBuffer = await state.currentAudioFile.arrayBuffer();
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        elements.translationStatus.classList.add('active');
+        const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=bs|en`;
+        const response = await fetch(url);
+        const data = await response.json();
 
-        // Get channel data (Whisper expects mono, 16kHz usually, but pipeline handles resampling)
-        let audioData = audioBuffer.getChannelData(0); // Get first channel
+        if (data.responseStatus === 200 && data.responseData) {
+            const translation = data.responseData.translatedText;
+            // Append to existing translation
+            const currentTranslation = elements.translationText.textContent;
+            const newTranslation = currentTranslation ? (currentTranslation + ' ' + translation) : translation;
 
-        // Run transcription
-        const output = await state.transcriber(audioData, {
-            chunk_length_s: 30,
-            stride_length_s: 5,
-            language: elements.languageSelect.value === 'bs-BA' ? 'bosnian' : 'english',
-            task: 'transcribe'
-        });
-
-        const transcript = output.text;
-        state.transcriptText = transcript;
-        updateTranscript(transcript);
-
-        // Translate if Bosnian
-        if (elements.languageSelect.value === 'bs-BA') {
-            debounceTranslation(transcript);
+            state.translationText = newTranslation;
+            elements.translationText.textContent = newTranslation;
         }
-
-        showToast('✅ Transcription complete!', 'success');
-
     } catch (error) {
-        console.error('Transcription error:', error);
-        showToast('❌ Transcription failed: ' + error.message, 'error');
+        console.error('Translation error:', error);
     } finally {
-        resetTranscribeButton();
+        elements.translationStatus.classList.remove('active');
     }
 }
 
