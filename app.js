@@ -433,7 +433,13 @@ function formatFileSize(bytes) {
 // TRANSCRIPTION FUNCTIONS
 // ========================================
 async function transcribeAudioFile() {
-    showToast('ℹ️ Note: File upload works best with live recording mode. Web Speech API has limitations with pre-recorded files.', 'warning');
+    // Clear previous text
+    elements.transcriptText.textContent = '';
+    elements.translationText.textContent = '';
+    state.transcriptText = '';
+    state.translationText = '';
+
+    showToast('🔊 Playing audio... Ensure your MICROPHONE can hear your SPEAKERS!', 'info');
 
     if (!state.currentAudioFile) {
         showToast('❌ No audio file selected', 'error');
@@ -454,13 +460,14 @@ async function transcribeAudioFile() {
             <path d="M10 3C10.5523 3 11 3.44772 11 4V6C11 6.55228 10.5523 7 10 7C9.44772 7 9 6.55228 9 6V4C9 3.44772 9.44772 3 10 3Z"/>
             <path opacity="0.3" d="M10 13C10.5523 13 11 13.4477 11 14V16C11 16.5523 10.5523 17 10 17C9.44772 17 9 16.5523 9 16V14C9 13.4477 9.44772 13 10 13Z"/>
         </svg>
-        Listening to audio...
+        Listening... (Unplug headphones!)
     `;
 
     try {
         const audio = new Audio();
         const fileURL = URL.createObjectURL(state.currentAudioFile);
         audio.src = fileURL;
+        audio.volume = 1.0; // Ensure max volume
 
         const recognition = new SpeechRecognition();
         recognition.continuous = true;
@@ -468,19 +475,32 @@ async function transcribeAudioFile() {
         recognition.lang = elements.languageSelect.value;
 
         let transcript = '';
+        let hasDetectedSpeech = false;
+
+        // Detection timeout
+        const speechTimeout = setTimeout(() => {
+            if (!hasDetectedSpeech) {
+                showToast('⚠️ No speech detected yet. Unplug headphones and turn up volume!', 'warning');
+            }
+        }, 4000);
 
         recognition.onresult = (event) => {
+            hasDetectedSpeech = true;
             for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcriptChunk = event.results[i][0].transcript;
+
                 if (event.results[i].isFinal) {
-                    const newText = event.results[i][0].transcript + ' ';
-                    transcript += newText;
-                    state.transcriptText += newText;
+                    transcript += transcriptChunk + ' ';
+                    state.transcriptText += transcriptChunk + ' ';
                     updateTranscript(state.transcriptText);
 
                     // Translate in real-time if Bosnian
                     if (elements.languageSelect.value === 'bs-BA') {
                         debounceTranslation(state.transcriptText);
                     }
+                } else {
+                    // Show interim results immediately
+                    updateTranscript(state.transcriptText + transcriptChunk);
                 }
             }
         };
@@ -492,13 +512,15 @@ async function transcribeAudioFile() {
             audio.onended = resolve;
         });
 
+        clearTimeout(speechTimeout);
+
         setTimeout(() => {
             recognition.stop();
 
             if (transcript) {
                 showToast('✅ Transcription complete!', 'success');
             } else {
-                showToast('⚠️ No speech detected. For best results, use live recording mode!', 'warning');
+                showToast('⚠️ No speech detected. This feature requires your mic to hear the speakers.', 'warning');
             }
 
             resetTranscribeButton();
@@ -506,7 +528,7 @@ async function transcribeAudioFile() {
 
     } catch (error) {
         console.error('Transcription error:', error);
-        showToast('❌ File transcription failed. Please use LIVE RECORDING mode for best results!', 'error');
+        showToast('❌ Error. Please use LIVE RECORDING for best results.', 'error');
         resetTranscribeButton();
     }
 }
@@ -517,7 +539,7 @@ function resetTranscribeButton() {
     elements.transcribeBtn.innerHTML = `
         <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
             <path d="M10 3C10.5523 3 11 3.44772 11 4V9.58579L13.2929 7.29289C13.6834 6.90237 14.3166 6.90237 14.7071 7.29289C15.0976 7.68342 15.0976 8.31658 14.7071 8.70711L10.7071 12.7071C10.3166 13.0976 9.68342 13.0976 9.29289 12.7071L5.29289 8.70711C4.90237 8.31658 4.90237 7.68342 5.29289 7.29289C5.68342 6.90237 6.31658 6.90237 6.70711 7.29289L9 9.58579V4C9 3.44772 9.44772 3 10 3Z"/>
-            <path d="M4 13C4.55228 13 5 13.4477 5 14C5 14.5523 5.44772 15 6 15H14C14.5523 15 15 14.5523 15 14C15 13.4477 15.4477 13 16 13C16.5523 13 17 13.4477 17 14C17 15.6569 15.6569 17 14 17H6C4.34315 17 3 15.6569 3 14C3 13.4477 3.44772 13 4 13Z"/>
+            <path d="M4 13C4.55228 13 5 13.4477 5 14C5 14.5523 5.44772 15 6 15H14C14.5523 15 15 14.5523 15 15V14C15 13.4477 15.4477 13 16 13C16.5523 13 17 13.4477 17 14C17 15.6569 15.6569 17 14 17H6C4.34315 17 3 15.6569 3 15V14C3 13.4477 3.44772 13 4 13Z"/>
         </svg>
         Transcribe Audio
     `;
