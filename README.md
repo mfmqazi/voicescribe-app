@@ -32,7 +32,7 @@ A beautiful, modern web application for speech-to-text transcription with automa
 
 ## 🚀 Live Demo
 
-Visit [VoiceScribe](https://YOUR_USERNAME.github.io/voice scribe-app/) to try it out!
+Visit [VoiceScribe](https://mfmqazi.github.io/voicescribe-app/) to try it out!
 
 ## 💻 Technology
 
@@ -45,7 +45,7 @@ Visit [VoiceScribe](https://YOUR_USERNAME.github.io/voice scribe-app/) to try it
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/voicescribe-app.git
+   git clone https://github.com/mfmqazi/voicescribe-app.git
    ```
 
 2. Open `index.html` in a modern browser (Chrome, Edge, or Safari recommended)
