@@ -434,22 +434,37 @@ async function transcribeAudioFile() {
 
             // Update UI Progress
             const progress = Math.round((i / totalChunks) * 100);
-            updateProgress(progress, `Transcribing ${progress}%...`);
+            updateProgress(progress, `Processing ${progress}%...`);
 
-            // Transcribe Chunk
-            const output = await state.transcriber(chunkData, {
+            // 1. Transcribe (Bosnian)
+            const transcriptionOutput = await state.transcriber(chunkData, {
                 language: elements.languageSelect.value === 'bs-BA' ? 'bosnian' : 'english',
                 task: 'transcribe'
             });
 
-            const chunkText = output.text.trim();
+            // 2. Translate (English) - Use Whisper's native translation if source is Bosnian
+            let translationOutput = { text: '' };
+            if (elements.languageSelect.value === 'bs-BA') {
+                translationOutput = await state.transcriber(chunkData, {
+                    language: 'bosnian',
+                    task: 'translate'
+                });
+            }
+
+            // Clean up text (remove hallucinations)
+            const chunkText = removeHallucinations(transcriptionOutput.text.trim());
+            const chunkTranslation = removeHallucinations(translationOutput.text.trim());
 
             if (chunkText) {
                 state.transcriptText += chunkText + ' ';
                 updateTranscript(state.transcriptText);
 
-                if (elements.languageSelect.value === 'bs-BA') {
-                    translateChunk(chunkText);
+                if (elements.languageSelect.value === 'bs-BA' && chunkTranslation) {
+                    // Append native Whisper translation
+                    const currentTranslation = elements.translationText.textContent;
+                    const newTranslation = currentTranslation ? (currentTranslation + ' ' + chunkTranslation) : chunkTranslation;
+                    state.translationText = newTranslation;
+                    elements.translationText.textContent = newTranslation;
                 }
             }
 
@@ -458,7 +473,7 @@ async function transcribeAudioFile() {
         }
 
         updateProgress(100, 'Complete!');
-        showToast('✅ Transcription complete!', 'success');
+        showToast('✅ Transcription & Translation complete!', 'success');
 
     } catch (error) {
         console.error('Transcription error:', error);
@@ -466,6 +481,27 @@ async function transcribeAudioFile() {
     } finally {
         setTimeout(resetTranscribeButton, 1000);
     }
+}
+
+// Helper to remove common Whisper hallucinations (repetitive loops)
+function removeHallucinations(text) {
+    if (!text) return '';
+
+    // 1. Remove repeated phrases (e.g. "Thank you. Thank you. Thank you.")
+    // This regex looks for a phrase that repeats 3 or more times
+    const repeater = /(.*)\1\1+/gi;
+    let clean = text.replace(repeater, '$1');
+
+    // 2. Filter out common hallucinated phrases in silence
+    const hallucinations = [
+        'Subtitles by', 'Amara.org', 'Audible', 'MOJE', 'uvolestnji'
+    ];
+
+    for (const h of hallucinations) {
+        if (clean.includes(h)) return '';
+    }
+
+    return clean;
 }
 
 function updateProgress(percent, text) {
