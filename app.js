@@ -442,29 +442,16 @@ async function transcribeAudioFile() {
                 task: 'transcribe'
             });
 
-            // 2. Translate (English) - Use Whisper's native translation if source is Bosnian
-            let translationOutput = { text: '' };
-            if (elements.languageSelect.value === 'bs-BA') {
-                translationOutput = await state.transcriber(chunkData, {
-                    language: 'bosnian',
-                    task: 'translate'
-                });
-            }
-
             // Clean up text (remove hallucinations)
             const chunkText = removeHallucinations(transcriptionOutput.text.trim());
-            const chunkTranslation = removeHallucinations(translationOutput.text.trim());
 
             if (chunkText) {
                 state.transcriptText += chunkText + ' ';
                 updateTranscript(state.transcriptText);
 
-                if (elements.languageSelect.value === 'bs-BA' && chunkTranslation) {
-                    // Append native Whisper translation
-                    const currentTranslation = elements.translationText.textContent;
-                    const newTranslation = currentTranslation ? (currentTranslation + ' ' + chunkTranslation) : chunkTranslation;
-                    state.translationText = newTranslation;
-                    elements.translationText.textContent = newTranslation;
+                // Translate using external API (now that text is clean)
+                if (elements.languageSelect.value === 'bs-BA') {
+                    translateChunk(chunkText);
                 }
             }
 
