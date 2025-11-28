@@ -485,25 +485,7 @@ body::before {
     color: var(--text-primary);
 }
 
-.upload-zone p {
-    color: var(--text-secondary);
-    margin-bottom: var(--spacing-xs);
-}
 
-.file-types {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-}
-
-.upload-progress {
-    display: none;
-    background: rgba(255, 255, 255, 0.03);
-    backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: var(--radius-xl);
-    padding: var(--spacing-xl);
-    box-shadow: var(--shadow-md);
-}
 
 .upload-progress.active {
     display: block;

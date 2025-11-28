@@ -4,6 +4,19 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers
 env.allowLocalModels = false;
 
 // ========================================
+// GOOGLE DRIVE CONFIGURATION
+// ========================================
+// ⚠️ IMPORTANT: You must replace these with your own keys from Google Cloud Console
+// 1. Go to https://console.cloud.google.com/
+// 2. Create a project
+// 3. Enable "Google Drive API" and "Google Picker API"
+// 4. Create an API Key
+// 5. Create an OAuth 2.0 Client ID (Add your site URL to "Authorized JavaScript origins")
+const GOOGLE_API_KEY = 'YOUR_API_KEY';
+const GOOGLE_CLIENT_ID = 'YOUR_CLIENT_ID';
+const GOOGLE_APP_ID = 'YOUR_PROJECT_NUMBER'; // Optional, usually the project number
+
+// ========================================
 // STATE MANAGEMENT
 // ========================================
 const state = {
@@ -17,7 +30,11 @@ const state = {
     translationText: '',
     translationDebounce: null,
     transcriber: null, // For file upload (Whisper)
-    isModelLoading: false
+    isModelLoading: false,
+    tokenClient: null,
+    accessToken: null,
+    pickerInited: false,
+    gisInited: false
 };
 
 // ========================================
@@ -44,6 +61,7 @@ const elements = {
     fileSize: document.getElementById('fileSize'),
     progressFill: document.getElementById('progressFill'),
     transcribeBtn: document.getElementById('transcribeBtn'),
+    googleDriveBtn: document.getElementById('googleDriveBtn'),
 
     // Language
     languageSelect: document.getElementById('language'),
@@ -75,6 +93,10 @@ function init() {
     setupEventListeners();
     updateStats();
     updateLanguageLabels();
+
+    // Load Google APIs
+    if (typeof gapi !== 'undefined') gapi.load('picker', onPickerApiLoad);
+    if (typeof google !== 'undefined') onGisLoaded();
 }
 
 function checkSpeechRecognitionSupport() {
@@ -252,6 +274,11 @@ function setupEventListeners() {
     elements.downloadBtn.addEventListener('click', downloadTranscript);
     elements.clearBtn.addEventListener('click', clearTranscript);
 
+    elements.googleDriveBtn.addEventListener('click', (e) => {
+        e.stopPropagation(); // Prevent triggering uploadZone click
+        handleGoogleDriveAuth();
+    });
+
     elements.transcriptText.addEventListener('input', () => {
         state.transcriptText = elements.transcriptText.textContent;
         updateStats();
@@ -332,7 +359,7 @@ function handleFileSelect(e) {
 }
 
 function handleFile(file) {
-    if (!file.type.startsWith('audio/')) {
+    if (!file.type.startsWith('audio/') && !file.name.match(/\.(mp3|wav|m4a|ogg)$/i)) {
         showToast('❌ Please select an audio file', 'error');
         return;
     }
@@ -545,6 +572,108 @@ function showToast(message, type = 'success') {
     elements.toastMessage.textContent = message;
     elements.toast.classList.add('show');
     setTimeout(() => elements.toast.classList.remove('show'), 4000);
+}
+
+// ========================================
+// GOOGLE DRIVE LOGIC
+// ========================================
+
+function onPickerApiLoad() {
+    state.pickerInited = true;
+}
+
+function onGisLoaded() {
+    state.tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: 'https://www.googleapis.com/auth/drive.readonly',
+        callback: '', // defined later
+    });
+    state.gisInited = true;
+}
+
+function handleGoogleDriveAuth() {
+    if (GOOGLE_API_KEY.includes('YOUR_') || GOOGLE_CLIENT_ID.includes('YOUR_')) {
+        alert('⚠️ CONFIGURATION REQUIRED:\n\nTo use Google Drive, you must update app.js with your own Google Cloud API Key and Client ID.\n\nSee lines 10-15 in app.js for instructions.');
+        return;
+    }
+
+    if (!state.gisInited || !state.pickerInited) {
+        showToast('⏳ Google services loading...', 'info');
+        // Try to reload
+        if (typeof gapi !== 'undefined') gapi.load('picker', onPickerApiLoad);
+        if (typeof google !== 'undefined') onGisLoaded();
+        return;
+    }
+
+    state.tokenClient.callback = async (response) => {
+        if (response.error !== undefined) {
+            showToast('❌ Auth failed: ' + response.error, 'error');
+            return;
+        }
+        state.accessToken = response.access_token;
+        createPicker();
+    };
+
+    if (state.accessToken === null) {
+        // Prompt the user to select a Google Account and ask for consent to share their data
+        // when establishing a new session.
+        state.tokenClient.requestAccessToken({ prompt: 'consent' });
+    } else {
+        // Skip display of account chooser and consent dialog for an existing session.
+        state.tokenClient.requestAccessToken({ prompt: '' });
+    }
+}
+
+function createPicker() {
+    if (state.pickerInited && state.accessToken) {
+        const view = new google.picker.DocsView(google.picker.ViewId.DOCS);
+        view.setMimeTypes('audio/mpeg,audio/wav,audio/x-m4a,audio/ogg');
+
+        const picker = new google.picker.PickerBuilder()
+            .setDeveloperKey(GOOGLE_API_KEY)
+            .setAppId(GOOGLE_APP_ID)
+            .setOAuthToken(state.accessToken)
+            .addView(view)
+            .addView(new google.picker.DocsView().setIncludeFolders(true))
+            .setCallback(pickerCallback)
+            .build();
+        picker.setVisible(true);
+    }
+}
+
+async function pickerCallback(data) {
+    if (data.action === google.picker.Action.PICKED) {
+        const fileId = data.docs[0].id;
+        const fileName = data.docs[0].name;
+        const mimeType = data.docs[0].mimeType;
+
+        showToast(`📥 Downloading "${fileName}"...`, 'info');
+
+        try {
+            const blob = await downloadDriveFile(fileId, state.accessToken);
+            // Create a File object from the Blob
+            const file = new File([blob], fileName, { type: mimeType });
+            handleFile(file);
+        } catch (error) {
+            console.error('Drive download error:', error);
+            showToast('❌ Failed to download file from Drive', 'error');
+        }
+    }
+}
+
+async function downloadDriveFile(fileId, accessToken) {
+    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+    const response = await fetch(url, {
+        headers: {
+            'Authorization': `Bearer ${accessToken}`
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return await response.blob();
 }
 
 document.addEventListener('DOMContentLoaded', init);
