@@ -474,20 +474,6 @@ body::before {
 }
 
 .upload-icon {
-    color: var(--primary-purple);
-    margin-bottom: var(--spacing-md);
-    filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.3));
-}
-
-.upload-zone h3 {
-    font-size: 1.3rem;
-    margin-bottom: var(--spacing-sm);
-    color: var(--text-primary);
-}
-
-
-
-.upload-progress.active {
     display: block;
     animation: fadeIn var(--transition-slow);
 }
