@@ -468,19 +468,6 @@ body::before {
 }
 
 .upload-zone.drag-over {
-    background: rgba(139, 92, 246, 0.1);
-    border-color: var(--primary-purple);
-    transform: scale(1.02);
-}
-
-.upload-icon {
-    display: block;
-    animation: fadeIn var(--transition-slow);
-}
-
-.file-info {
-    display: flex;
-    align-items: center;
     gap: var(--spacing-md);
     margin-bottom: var(--spacing-lg);
 }
