@@ -1,20 +1,11 @@
-import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.6.0';
-
-// Skip local model check to avoid errors in some environments
-env.allowLocalModels = false;
-
 // ========================================
 // GOOGLE DRIVE CONFIGURATION
 // ========================================
 // ⚠️ IMPORTANT: You must replace these with your own keys from Google Cloud Console
-// 1. Go to https://console.cloud.google.com/
-// 2. Create a project
-// 3. Enable "Google Drive API" and "Google Picker API"
-// 4. Create an API Key
-// 5. Create an OAuth 2.0 Client ID (Add your site URL to "Authorized JavaScript origins")
 const GOOGLE_API_KEY = 'YOUR_API_KEY';
 const GOOGLE_CLIENT_ID = 'YOUR_CLIENT_ID';
-const GOOGLE_APP_ID = 'YOUR_PROJECT_NUMBER'; // Optional, usually the project number
+const GOOGLE_APP_ID = 'YOUR_PROJECT_NUMBER';
+
 
 // ========================================
 // STATE MANAGEMENT
@@ -22,20 +13,29 @@ const GOOGLE_APP_ID = 'YOUR_PROJECT_NUMBER'; // Optional, usually the project nu
 const state = {
     currentMode: 'record',
     isRecording: false,
-    recognition: null,
-    recordingTimer: null,
+    voskSocket: null,
+    audioContext: null,
+    mediaStream: null,
+    processor: null,
     recordingStartTime: 0,
+    recordingTimer: null,
     currentAudioFile: null,
     transcriptText: '',
     translationText: '',
     translationDebounce: null,
-    transcriber: null, // For file upload (Whisper)
-    isModelLoading: false,
+
+    // Settings
+    voskUrl: localStorage.getItem('voskUrl') || 'ws://localhost:2700',
+    libreUrl: localStorage.getItem('libreUrl') || 'http://localhost:5000',
+
+    // Google Drive (kept for file picker)
     tokenClient: null,
     accessToken: null,
     pickerInited: false,
     gisInited: false
 };
+
+
 
 // ========================================
 // DOM ELEMENTS
@@ -63,9 +63,15 @@ const elements = {
     transcribeBtn: document.getElementById('transcribeBtn'),
     googleDriveBtn: document.getElementById('googleDriveBtn'),
 
-    // Language
+    // Language & Settings
     languageSelect: document.getElementById('language'),
     originalLanguageLabel: document.getElementById('originalLanguageLabel'),
+    settingsBtn: document.getElementById('settingsBtn'),
+    settingsModal: document.getElementById('settingsModal'),
+    closeSettingsBtn: document.getElementById('closeSettingsBtn'),
+    saveSettingsBtn: document.getElementById('saveSettingsBtn'),
+    voskUrlInput: document.getElementById('voskUrl'),
+    libreUrlInput: document.getElementById('libreUrl'),
 
     // Output
     outputSection: document.getElementById('outputSection'),
@@ -89,378 +95,454 @@ const elements = {
 // INITIALIZATION
 // ========================================
 function init() {
-    checkSpeechRecognitionSupport();
     setupEventListeners();
     updateStats();
     updateLanguageLabels();
+    loadSettings();
 
     // Load Google APIs
     if (typeof gapi !== 'undefined') gapi.load('picker', onPickerApiLoad);
     if (typeof google !== 'undefined') onGisLoaded();
 }
 
-function checkSpeechRecognitionSupport() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+function setupEventListeners() {
+    // Mode Switching
+    elements.recordModeBtn.addEventListener('click', () => switchMode('record'));
+    elements.uploadModeBtn.addEventListener('click', () => switchMode('upload'));
 
-    if (!SpeechRecognition) {
-        showToast('⚠️ Live recording not supported in this browser. Use Chrome/Edge.', 'warning');
-        elements.recordBtn.disabled = true;
-        elements.recordStatus.textContent = 'Not supported';
+    // Recording
+    elements.recordBtn.addEventListener('click', toggleRecording);
+
+    // File Upload
+    elements.uploadZone.addEventListener('click', (e) => {
+        if (e.target !== elements.googleDriveBtn && !elements.googleDriveBtn.contains(e.target)) {
+            elements.fileInput.click();
+        }
+    });
+    elements.uploadZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        elements.uploadZone.classList.add('drag-over');
+    });
+    elements.uploadZone.addEventListener('dragleave', () => {
+        elements.uploadZone.classList.remove('drag-over');
+    });
+    elements.uploadZone.addEventListener('drop', handleDrop);
+    elements.fileInput.addEventListener('change', handleFileSelect);
+    elements.transcribeBtn.addEventListener('click', transcribeAudioFile);
+
+    // Google Drive
+    elements.googleDriveBtn.addEventListener('click', handleGoogleDriveAuth);
+
+    // Settings
+    elements.settingsBtn.addEventListener('click', openSettings);
+    elements.closeSettingsBtn.addEventListener('click', closeSettings);
+    elements.saveSettingsBtn.addEventListener('click', saveSettings);
+    elements.settingsModal.addEventListener('click', (e) => {
+        if (e.target === elements.settingsModal) closeSettings();
+    });
+
+    // Actions
+    elements.copyBtn.addEventListener('click', copyTranscript);
+    elements.downloadBtn.addEventListener('click', downloadTranscript);
+    elements.clearBtn.addEventListener('click', clearTranscript);
+    elements.languageSelect.addEventListener('change', updateLanguageLabels);
+
+    // Text Editing
+    elements.transcriptText.addEventListener('input', updateStats);
+}
+
+function loadSettings() {
+    elements.voskUrlInput.value = state.voskUrl;
+    elements.libreUrlInput.value = state.libreUrl;
+}
+
+function openSettings() {
+    elements.settingsModal.classList.add('active');
+}
+
+function closeSettings() {
+    elements.settingsModal.classList.remove('active');
+}
+
+function saveSettings() {
+    state.voskUrl = elements.voskUrlInput.value.trim();
+    state.libreUrl = elements.libreUrlInput.value.trim();
+
+    // Remove trailing slash from LibreTranslate URL if present
+    if (state.libreUrl.endsWith('/')) {
+        state.libreUrl = state.libreUrl.slice(0, -1);
+    }
+
+    localStorage.setItem('voskUrl', state.voskUrl);
+    localStorage.setItem('libreUrl', state.libreUrl);
+
+    closeSettings();
+    showToast('Settings saved!', 'success');
+}
+
+// ========================================
+// CORE LOGIC
+// ========================================
+
+function switchMode(mode) {
+    state.currentMode = mode;
+
+    // UI Updates
+    elements.recordModeBtn.classList.toggle('active', mode === 'record');
+    elements.uploadModeBtn.classList.toggle('active', mode === 'upload');
+
+    if (mode === 'record') {
+        elements.recordMode.classList.add('active');
+        elements.uploadMode.classList.remove('active');
     } else {
-        initializeSpeechRecognition();
-    }
-}
-
-function initializeSpeechRecognition() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    state.recognition = new SpeechRecognition();
-
-    state.recognition.continuous = true;
-    state.recognition.interimResults = true;
-    state.recognition.lang = elements.languageSelect.value;
-
-    state.recognition.onstart = () => {
-        state.isRecording = true;
-        elements.recordBtn.classList.add('recording');
-        elements.recordStatus.style.display = 'none';
-        elements.recordingInfo.classList.add('active');
-        startTimer();
-    };
-
-    state.recognition.onresult = (event) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
-
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-            const transcript = event.results[i][0].transcript;
-            if (event.results[i].isFinal) {
-                finalTranscript += transcript + ' ';
-            } else {
-                interimTranscript += transcript;
-            }
-        }
-
-        if (finalTranscript) {
-            state.transcriptText += finalTranscript;
-            updateTranscript(state.transcriptText);
-
-            // Translate if Bosnian is selected
-            if (elements.languageSelect.value === 'bs-BA') {
-                debounceTranslation(state.transcriptText);
-            }
-        }
-
-        // Show interim results
-        if (interimTranscript && !finalTranscript) {
-            updateTranscript(state.transcriptText + interimTranscript);
-        }
-    };
-
-    state.recognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
+        elements.recordMode.classList.remove('active');
+        elements.uploadMode.classList.add('active');
         stopRecording();
-        showToast('❌ Recording error: ' + event.error, 'error');
-    };
-
-    state.recognition.onend = () => {
-        if (state.isRecording) {
-            try {
-                state.recognition.start();
-            } catch (e) {
-                console.log('Recognition ended');
-            }
-        }
-    };
-}
-
-// ========================================
-// WHISPER AI SETUP (For Files)
-// ========================================
-async function initializeWhisper() {
-    if (state.transcriber) return state.transcriber;
-
-    try {
-        state.isModelLoading = true;
-        showToast('📥 Downloading AI model (approx 200MB)...', 'info');
-
-        // Upgrade to 'base' model for better Bosnian accuracy
-        state.transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-base');
-
-        state.isModelLoading = false;
-        showToast('✅ AI Model ready!', 'success');
-        return state.transcriber;
-    } catch (error) {
-        console.error('Model loading error:', error);
-        state.isModelLoading = false;
-        showToast('❌ Failed to load AI model', 'error');
-        return null;
-    }
-}
-
-// ========================================
-// TRANSLATION
-// ========================================
-function debounceTranslation(text) {
-    if (state.translationDebounce) {
-        clearTimeout(state.translationDebounce);
-    }
-
-    state.translationDebounce = setTimeout(() => {
-        translateText(text);
-    }, 800);
-}
-
-async function translateText(text) {
-    if (!text || text.trim() === '') {
-        elements.translationText.textContent = '';
-        return;
-    }
-
-    if (elements.languageSelect.value !== 'bs-BA') {
-        elements.translationText.textContent = text;
-        state.translationText = text;
-        return;
-    }
-
-    try {
-        elements.translationStatus.classList.add('active');
-        const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=bs|en`;
-        const response = await fetch(url);
-        const data = await response.json();
-
-        if (data.responseStatus === 200 && data.responseData) {
-            const translation = data.responseData.translatedText;
-            state.translationText = translation;
-            elements.translationText.textContent = translation;
-        }
-    } catch (error) {
-        console.error('Translation error:', error);
-    } finally {
-        elements.translationStatus.classList.remove('active');
     }
 }
 
 function updateLanguageLabels() {
-    const lang = elements.languageSelect.value;
-    if (lang === 'bs-BA') {
-        elements.originalLanguageLabel.textContent = '🇧🇦 Bosnian';
-    } else {
-        elements.originalLanguageLabel.textContent = 'Original';
-    }
+    const isBosnian = elements.languageSelect.value === 'bs-BA';
+    elements.originalLanguageLabel.textContent = isBosnian ? '🇧🇦 Bosnian (Original)' : '🇺🇸 English (Original)';
 }
 
-// ========================================
-// EVENT LISTENERS
-// ========================================
-function setupEventListeners() {
-    elements.recordModeBtn.addEventListener('click', () => switchMode('record'));
-    elements.uploadModeBtn.addEventListener('click', () => switchMode('upload'));
-    elements.recordBtn.addEventListener('click', toggleRecording);
+// --- Vosk Recording Logic ---
 
-    elements.languageSelect.addEventListener('change', (e) => {
-        if (state.recognition) state.recognition.lang = e.target.value;
-        updateLanguageLabels();
-    });
-
-    elements.uploadZone.addEventListener('click', () => elements.fileInput.click());
-    elements.fileInput.addEventListener('change', handleFileSelect);
-    elements.uploadZone.addEventListener('dragover', handleDragOver);
-    elements.uploadZone.addEventListener('dragleave', handleDragLeave);
-    elements.uploadZone.addEventListener('drop', handleDrop);
-
-    elements.transcribeBtn.addEventListener('click', transcribeAudioFile);
-
-    elements.copyBtn.addEventListener('click', copyTranscript);
-    elements.downloadBtn.addEventListener('click', downloadTranscript);
-    elements.clearBtn.addEventListener('click', clearTranscript);
-
-    elements.googleDriveBtn.addEventListener('click', (e) => {
-        e.stopPropagation(); // Prevent triggering uploadZone click
-        handleGoogleDriveAuth();
-    });
-
-    elements.transcriptText.addEventListener('input', () => {
-        state.transcriptText = elements.transcriptText.textContent;
-        updateStats();
-        if (elements.languageSelect.value === 'bs-BA') {
-            debounceTranslation(state.transcriptText);
-        }
-    });
-}
-
-// ========================================
-// MODE SWITCHING & RECORDING
-// ========================================
-function switchMode(mode) {
-    if (state.currentMode === mode) return;
-    state.currentMode = mode;
-    elements.recordModeBtn.classList.toggle('active', mode === 'record');
-    elements.uploadModeBtn.classList.toggle('active', mode === 'upload');
-    elements.recordMode.classList.toggle('active', mode === 'record');
-    elements.uploadMode.classList.toggle('active', mode === 'upload');
-    if (mode !== 'record' && state.isRecording) stopRecording();
-}
-
-function toggleRecording() {
-    state.isRecording ? stopRecording() : startRecording();
-}
-
-function startRecording() {
-    if (!state.recognition) return;
+async function startRecording() {
     try {
-        state.recognition.start();
-        showToast('🎤 Recording started', 'success');
-    } catch (e) {
-        showToast('❌ Failed to start', 'error');
+        state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        // Connect to Vosk Server
+        state.voskSocket = new WebSocket(state.voskUrl);
+
+        state.voskSocket.onopen = () => {
+            console.log('Connected to Vosk Server');
+            setupAudioProcessing();
+
+            // UI Updates
+            state.isRecording = true;
+            state.transcriptText = '';
+            state.translationText = '';
+            updateTranscript('');
+            elements.translationText.textContent = '';
+
+            elements.recordBtn.classList.add('recording');
+            elements.recordStatus.textContent = 'Listening...';
+            elements.recordingInfo.classList.add('active');
+
+            state.recordingStartTime = Date.now();
+            state.recordingTimer = setInterval(updateTimer, 1000);
+        };
+
+        state.voskSocket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.partial) {
+                // Handle partial results if needed (optional)
+            }
+            if (data.text) {
+                const newText = data.text;
+                if (newText && newText.length > 0) {
+                    state.transcriptText += newText + ' ';
+                    updateTranscript(state.transcriptText);
+
+                    // Translate
+                    if (elements.languageSelect.value === 'bs-BA') {
+                        translateText(newText);
+                    }
+                }
+            }
+        };
+
+        state.voskSocket.onerror = (error) => {
+            console.error('Vosk WebSocket Error:', error);
+            showToast('Connection to Vosk server failed. Check settings.', 'error');
+            stopRecording();
+        };
+
+        state.voskSocket.onclose = () => {
+            console.log('Vosk WebSocket Closed');
+            if (state.isRecording) stopRecording();
+        };
+
+    } catch (error) {
+        console.error('Microphone Error:', error);
+        showToast('Microphone access denied or error.', 'error');
     }
+}
+
+function setupAudioProcessing() {
+    const source = state.audioContext.createMediaStreamSource(state.mediaStream);
+    // Vosk usually expects 16kHz mono, but server might resample. 
+    // Ideally we should resample here, but for simplicity we send raw float32 or downsampled.
+    // Standard Vosk server often expects raw PCM 16-bit mono at sample rate.
+
+    // We'll use a ScriptProcessor (deprecated but simple) or AudioWorklet.
+    // For simplicity in this v2 demo, let's use ScriptProcessor to downsample to 16kHz.
+
+    const bufferSize = 4096;
+    state.processor = state.audioContext.createScriptProcessor(bufferSize, 1, 1);
+
+    source.connect(state.processor);
+    state.processor.connect(state.audioContext.destination);
+
+    state.processor.onaudioprocess = (e) => {
+        if (!state.voskSocket || state.voskSocket.readyState !== WebSocket.OPEN) return;
+
+        const inputData = e.inputBuffer.getChannelData(0);
+        // Downsample to 16kHz if needed, or just send if server handles it.
+        // Most Vosk docker images expect 16000Hz.
+        // We'll do a simple downsampling.
+
+        const targetSampleRate = 16000; // Vosk default
+        const downsampledBuffer = downsampleBuffer(inputData, state.audioContext.sampleRate, targetSampleRate);
+
+        // Convert to 16-bit PCM
+        const pcmData = floatTo16BitPCM(downsampledBuffer);
+        state.voskSocket.send(pcmData);
+    };
 }
 
 function stopRecording() {
-    if (!state.recognition || !state.isRecording) return;
+    if (!state.isRecording) return;
+
     state.isRecording = false;
-    state.recognition.stop();
     elements.recordBtn.classList.remove('recording');
-    elements.recordStatus.style.display = 'block';
+    elements.recordStatus.textContent = 'Tap to start recording';
     elements.recordingInfo.classList.remove('active');
-    stopTimer();
-    showToast('⏹️ Recording stopped', 'success');
-}
 
-function startTimer() {
-    state.recordingStartTime = Date.now();
-    state.recordingTimer = setInterval(updateTimer, 100);
-}
+    if (state.voskSocket) {
+        state.voskSocket.close();
+        state.voskSocket = null;
+    }
 
-function stopTimer() {
+    if (state.mediaStream) {
+        state.mediaStream.getTracks().forEach(track => track.stop());
+        state.mediaStream = null;
+    }
+
+    if (state.processor) {
+        state.processor.disconnect();
+        state.processor = null;
+    }
+
+    if (state.audioContext) {
+        state.audioContext.close();
+        state.audioContext = null;
+    }
+
     clearInterval(state.recordingTimer);
     elements.recordTimer.textContent = '0:00';
 }
 
-function updateTimer() {
-    const elapsed = Date.now() - state.recordingStartTime;
-    const seconds = Math.floor(elapsed / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    elements.recordTimer.textContent = `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
-}
-
-// ========================================
-// FILE UPLOAD & WHISPER TRANSCRIPTION
-// ========================================
-function handleDragOver(e) { e.preventDefault(); elements.uploadZone.classList.add('drag-over'); }
-function handleDragLeave(e) { e.preventDefault(); elements.uploadZone.classList.remove('drag-over'); }
-function handleDrop(e) {
-    e.preventDefault();
-    elements.uploadZone.classList.remove('drag-over');
-    if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
-}
-function handleFileSelect(e) {
-    if (e.target.files.length > 0) handleFile(e.target.files[0]);
-}
-
-function handleFile(file) {
-    if (!file.type.startsWith('audio/') && !file.name.match(/\.(mp3|wav|m4a|ogg)$/i)) {
-        showToast('❌ Please select an audio file', 'error');
-        return;
+function toggleRecording() {
+    if (state.isRecording) {
+        stopRecording();
+    } else {
+        startRecording();
     }
-    state.currentAudioFile = file;
-    elements.fileName.textContent = file.name;
-    elements.fileSize.textContent = formatFileSize(file.size);
-    elements.uploadZone.style.display = 'none';
-    elements.uploadProgress.classList.add('active');
-    elements.progressFill.style.width = '100%';
-    showToast('✅ File ready to transcribe', 'success');
 }
 
-function formatFileSize(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+function updateTimer() {
+    const diff = Math.floor((Date.now() - state.recordingStartTime) / 1000);
+    const mins = Math.floor(diff / 60);
+    const secs = diff % 60;
+    elements.recordTimer.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
 }
+
+// --- Audio Utils ---
+
+function downsampleBuffer(buffer, sampleRate, outSampleRate) {
+    if (outSampleRate == sampleRate) {
+        return buffer;
+    }
+    if (outSampleRate > sampleRate) {
+        throw "downsampling rate show be smaller than original sample rate";
+    }
+    var sampleRateRatio = sampleRate / outSampleRate;
+    var newLength = Math.round(buffer.length / sampleRateRatio);
+    var result = new Float32Array(newLength);
+    var offsetResult = 0;
+    var offsetBuffer = 0;
+    while (offsetResult < result.length) {
+        var nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+        var accum = 0, count = 0;
+        for (var i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+            accum += buffer[i];
+            count++;
+        }
+        result[offsetResult] = accum / count;
+        offsetResult++;
+        offsetBuffer = nextOffsetBuffer;
+    }
+    return result;
+}
+
+function floatTo16BitPCM(output) {
+    var buffer = new ArrayBuffer(output.length * 2);
+    var view = new DataView(buffer);
+    for (var i = 0; i < output.length; i++) {
+        var s = Math.max(-1, Math.min(1, output[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return buffer;
+}
+
+// --- LibreTranslate Logic ---
+
+async function translateText(text, immediate = false) {
+    if (!text) return;
+
+    const doTranslate = async () => {
+        try {
+            elements.translationStatus.classList.add('active');
+
+            const response = await fetch(`${state.libreUrl}/translate`, {
+                method: "POST",
+                body: JSON.stringify({
+                    q: text,
+                    source: "bs", // Bosnian
+                    target: "en", // English
+                    format: "text"
+                }),
+                headers: { "Content-Type": "application/json" }
+            });
+
+            if (!response.ok) throw new Error(`Translation failed: ${response.statusText}`);
+
+            const data = await response.json();
+
+            if (data.translatedText) {
+                // For file upload (immediate), we replace. For live, we might want to append or replace.
+                // Since we pass the FULL text for file upload, replacing is correct.
+                // For live, we usually append to state.transcriptText and call this with the NEW chunk.
+                // Wait, for live recording, we are appending newText to state.transcriptText, 
+                // but passing ONLY newText to translateText.
+                // So for live, we should APPEND.
+                // For file upload, we pass the WHOLE text.
+
+                // Let's handle this by checking if we are in 'immediate' mode (file upload) or not.
+
+                if (immediate) {
+                    state.translationText = data.translatedText;
+                    elements.translationText.textContent = data.translatedText;
+                } else {
+                    // Live mode: append
+                    const currentTranslation = elements.translationText.textContent;
+                    const newTranslation = currentTranslation ? (currentTranslation + ' ' + data.translatedText) : data.translatedText;
+                    state.translationText = newTranslation;
+                    elements.translationText.textContent = newTranslation;
+                }
+            }
+
+        } catch (error) {
+            console.error('LibreTranslate Error:', error);
+            showToast('Translation failed. Check settings.', 'warning');
+        } finally {
+            elements.translationStatus.classList.remove('active');
+        }
+    };
+
+    if (immediate) {
+        await doTranslate();
+    } else {
+        // Debounce for live recording
+        clearTimeout(state.translationDebounce);
+        state.translationDebounce = setTimeout(doTranslate, 1000);
+    }
+}
+
+// --- File Upload (Vosk via WebSocket for files is tricky, simulating or using same socket) ---
+// For v2, we'll use the same WebSocket approach but feed the file data.
 
 async function transcribeAudioFile() {
-    // Reset UI
-    elements.transcriptText.textContent = '';
-    elements.translationText.textContent = '';
-    state.transcriptText = '';
+    if (!state.currentAudioFile) return;
 
-    if (!state.currentAudioFile) {
-        showToast('❌ No file selected', 'error');
+    if (!state.voskUrl) {
+        showToast('Please configure Vosk URL in settings', 'error');
         return;
-    }
-
-    // Initialize Whisper if not ready
-    if (!state.transcriber) {
-        const transcriber = await initializeWhisper();
-        if (!transcriber) return;
     }
 
     elements.transcribeBtn.disabled = true;
     elements.transcribeBtn.classList.add('processing');
-    updateProgress(0, 'Starting...');
+    updateProgress(0, 'Preparing...');
 
     try {
-        // 1. Decode and Resample to 16kHz (CRITICAL for Whisper)
-        updateProgress(0, 'Resampling audio...');
+        // Decode audio
         const arrayBuffer = await state.currentAudioFile.arrayBuffer();
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const decodedData = await audioCtx.decodeAudioData(arrayBuffer);
 
-        // Create OfflineAudioContext at 16kHz
-        const originalCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const decodedData = await originalCtx.decodeAudioData(arrayBuffer);
-
+        // Resample to 16kHz
         const offlineCtx = new OfflineAudioContext(1, decodedData.duration * 16000, 16000);
         const source = offlineCtx.createBufferSource();
         source.buffer = decodedData;
         source.connect(offlineCtx.destination);
         source.start();
-
         const resampledBuffer = await offlineCtx.startRendering();
-        const audioData = resampledBuffer.getChannelData(0);
+        const audioData = resampledBuffer.getChannelData(0); // Float32Array
 
-        // 2. Process in chunks
-        const CHUNK_DURATION = 30; // seconds
-        const SAMPLE_RATE = 16000;
-        const CHUNK_SAMPLES = CHUNK_DURATION * SAMPLE_RATE;
-        const totalChunks = Math.ceil(audioData.length / CHUNK_SAMPLES);
+        // Connect to Vosk
+        const socket = new WebSocket(state.voskUrl);
 
-        showToast(`🚀 Processing ${Math.ceil(decodedData.duration)}s of audio...`, 'info');
+        updateProgress(10, 'Connecting to server...');
 
-        for (let i = 0; i < totalChunks; i++) {
-            const startSample = i * CHUNK_SAMPLES;
-            const endSample = Math.min((i + 1) * CHUNK_SAMPLES, audioData.length);
-            const chunkData = audioData.slice(startSample, endSample);
+        await new Promise((resolve, reject) => {
+            socket.onopen = resolve;
+            socket.onerror = reject;
+        });
 
-            // Update UI Progress
-            const progress = Math.round((i / totalChunks) * 100);
-            updateProgress(progress, `Processing ${progress}%...`);
+        updateProgress(20, 'Transcribing...');
 
-            // 1. Transcribe (Bosnian)
-            const transcriptionOutput = await state.transcriber(chunkData, {
-                language: elements.languageSelect.value === 'bs-BA' ? 'bosnian' : 'english',
-                task: 'transcribe'
-            });
+        // Send data in chunks
+        const chunkSize = 4096;
+        let offset = 0;
 
-            // Clean up text (remove hallucinations)
-            const chunkText = removeHallucinations(transcriptionOutput.text.trim());
-
-            if (chunkText) {
-                state.transcriptText += chunkText + ' ';
+        // Listen for results
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.text) {
+                state.transcriptText += data.text + ' ';
                 updateTranscript(state.transcriptText);
-
-                // Translate using external API (now that text is clean)
-                if (elements.languageSelect.value === 'bs-BA') {
-                    translateChunk(chunkText);
-                }
             }
+        };
 
-            // Yield to UI thread
-            await new Promise(r => setTimeout(r, 10));
+        // Send loop
+        while (offset < audioData.length) {
+            const end = Math.min(offset + chunkSize, audioData.length);
+            const chunk = audioData.slice(offset, end);
+            const pcmChunk = floatTo16BitPCM(chunk);
+            socket.send(pcmChunk);
+            offset += chunkSize;
+
+            // Update UI occasionally
+            if (offset % (chunkSize * 10) === 0) {
+                const progress = Math.round((offset / audioData.length) * 100);
+                updateProgress(progress, `Transcribing ${progress}%...`);
+                await new Promise(r => setTimeout(r, 10)); // Yield to UI
+            }
         }
 
+        // Send EOF
+        socket.send('{"eof" : 1}');
+
+        // Wait a bit for final results then close
+        await new Promise(r => setTimeout(r, 2000));
+        socket.close();
+
         updateProgress(100, 'Complete!');
-        showToast('✅ Transcription & Translation complete!', 'success');
+        showToast('✅ Transcription complete!', 'success');
+
+        // Translate full text
+        if (elements.languageSelect.value === 'bs-BA') {
+            updateProgress(100, 'Translating...');
+            // Use the LibreTranslate function
+            // Note: LibreTranslate might also need chunking if text is huge, 
+            // but for now we'll try sending it all or rely on translateText's logic if we improve it.
+            // Since translateText is currently simple, let's just call it.
+            // If the text is very long, we might want to split it by sentences, but let's start with this.
+            await translateText(state.transcriptText, true);
+        }
 
     } catch (error) {
         console.error('Transcription error:', error);
@@ -470,25 +552,38 @@ async function transcribeAudioFile() {
     }
 }
 
-// Helper to remove common Whisper hallucinations (repetitive loops)
-function removeHallucinations(text) {
-    if (!text) return '';
+// --- UI Helpers ---
 
-    // 1. Remove repeated phrases (e.g. "Thank you. Thank you. Thank you.")
-    // This regex looks for a phrase that repeats 3 or more times
-    const repeater = /(.*)\1\1+/gi;
-    let clean = text.replace(repeater, '$1');
-
-    // 2. Filter out common hallucinated phrases in silence
-    const hallucinations = [
-        'Subtitles by', 'Amara.org', 'Audible', 'MOJE', 'uvolestnji'
-    ];
-
-    for (const h of hallucinations) {
-        if (clean.includes(h)) return '';
+function handleDrop(e) {
+    e.preventDefault();
+    elements.uploadZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('audio/')) {
+        handleFile(file);
+    } else {
+        showToast('Please upload an audio file', 'error');
     }
+}
 
-    return clean;
+function handleFileSelect(e) {
+    const file = e.target.files[0];
+    if (file) handleFile(file);
+}
+
+function handleFile(file) {
+    state.currentAudioFile = file;
+    elements.fileName.textContent = file.name;
+    elements.fileSize.textContent = formatFileSize(file.size);
+    elements.uploadProgress.classList.add('active');
+    elements.uploadProgress.style.display = 'block';
+    elements.transcribeBtn.disabled = false;
+    elements.progressFill.style.width = '0%';
+
+    // Reset output
+    state.transcriptText = '';
+    state.translationText = '';
+    updateTranscript('');
+    elements.translationText.textContent = '';
 }
 
 function updateProgress(percent, text) {
@@ -499,34 +594,8 @@ function updateProgress(percent, text) {
         </svg>
         ${text}
     `;
-    // Also update the visual progress bar if visible
     if (elements.uploadProgress.classList.contains('active')) {
         elements.progressFill.style.width = `${percent}%`;
-    }
-}
-
-async function translateChunk(text) {
-    if (!text) return;
-
-    try {
-        elements.translationStatus.classList.add('active');
-        const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=bs|en`;
-        const response = await fetch(url);
-        const data = await response.json();
-
-        if (data.responseStatus === 200 && data.responseData) {
-            const translation = data.responseData.translatedText;
-            // Append to existing translation
-            const currentTranslation = elements.translationText.textContent;
-            const newTranslation = currentTranslation ? (currentTranslation + ' ' + translation) : translation;
-
-            state.translationText = newTranslation;
-            elements.translationText.textContent = newTranslation;
-        }
-    } catch (error) {
-        console.error('Translation error:', error);
-    } finally {
-        elements.translationStatus.classList.remove('active');
     }
 }
 
@@ -540,6 +609,26 @@ function resetTranscribeButton() {
         </svg>
         Transcribe Audio
     `;
+}
+
+// ========================================
+// UTILS
+// ========================================
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function showToast(message, type = 'success') {
+    elements.toastMessage.textContent = message;
+    elements.toast.className = `toast show ${type}`;
+    setTimeout(() => {
+        elements.toast.classList.remove('show');
+    }, 3000);
 }
 
 function updateTranscript(text) {
@@ -587,18 +676,13 @@ function clearTranscript() {
         elements.transcriptText.textContent = '';
         elements.translationText.textContent = '';
         state.transcriptText = '';
+        state.translationText = '';
         updateStats();
     }
 }
 
-function showToast(message, type = 'success') {
-    elements.toastMessage.textContent = message;
-    elements.toast.classList.add('show');
-    setTimeout(() => elements.toast.classList.remove('show'), 4000);
-}
-
 // ========================================
-// GOOGLE DRIVE LOGIC
+// GOOGLE DRIVE INTEGRATION
 // ========================================
 
 function onPickerApiLoad() {
@@ -615,93 +699,70 @@ function onGisLoaded() {
 }
 
 function handleGoogleDriveAuth() {
-    if (GOOGLE_API_KEY.includes('YOUR_') || GOOGLE_CLIENT_ID.includes('YOUR_')) {
-        alert('⚠️ CONFIGURATION REQUIRED:\n\nTo use Google Drive, you must update app.js with your own Google Cloud API Key and Client ID.\n\nSee lines 10-15 in app.js for instructions.');
-        return;
-    }
-
-    if (!state.gisInited || !state.pickerInited) {
-        showToast('⏳ Google services loading...', 'info');
-        // Try to reload
-        if (typeof gapi !== 'undefined') gapi.load('picker', onPickerApiLoad);
-        if (typeof google !== 'undefined') onGisLoaded();
+    if (GOOGLE_API_KEY === 'YOUR_API_KEY') {
+        alert('Please configure GOOGLE_API_KEY in app.js');
         return;
     }
 
     state.tokenClient.callback = async (response) => {
         if (response.error !== undefined) {
-            showToast('❌ Auth failed: ' + response.error, 'error');
-            return;
+            throw (response);
         }
         state.accessToken = response.access_token;
         createPicker();
     };
 
     if (state.accessToken === null) {
-        // Prompt the user to select a Google Account and ask for consent to share their data
-        // when establishing a new session.
         state.tokenClient.requestAccessToken({ prompt: 'consent' });
     } else {
-        // Skip display of account chooser and consent dialog for an existing session.
         state.tokenClient.requestAccessToken({ prompt: '' });
     }
 }
 
 function createPicker() {
-    if (state.pickerInited && state.accessToken) {
-        const view = new google.picker.DocsView(google.picker.ViewId.DOCS);
-        view.setMimeTypes('audio/mpeg,audio/wav,audio/x-m4a,audio/ogg');
+    const view = new google.picker.View(google.picker.ViewId.DOCS);
+    view.setMimeTypes('audio/*');
 
-        const picker = new google.picker.PickerBuilder()
-            .setDeveloperKey(GOOGLE_API_KEY)
-            .setAppId(GOOGLE_APP_ID)
-            .setOAuthToken(state.accessToken)
-            .addView(view)
-            .addView(new google.picker.DocsView().setIncludeFolders(true))
-            .setCallback(pickerCallback)
-            .build();
-        picker.setVisible(true);
-    }
+    const picker = new google.picker.PickerBuilder()
+        .enableFeature(google.picker.Feature.NAV_HIDDEN)
+        .setDeveloperKey(GOOGLE_API_KEY)
+        .setAppId(GOOGLE_APP_ID)
+        .setOAuthToken(state.accessToken)
+        .addView(view)
+        .addView(new google.picker.DocsUploadView())
+        .setCallback(pickerCallback)
+        .build();
+    picker.setVisible(true);
 }
 
 async function pickerCallback(data) {
     if (data.action === google.picker.Action.PICKED) {
         const fileId = data.docs[0].id;
         const fileName = data.docs[0].name;
-        const mimeType = data.docs[0].mimeType;
-
-        showToast(`📥 Downloading "${fileName}"...`, 'info');
-
-        try {
-            const blob = await downloadDriveFile(fileId, state.accessToken);
-            // Create a File object from the Blob
-            const file = new File([blob], fileName, { type: mimeType });
-            handleFile(file);
-        } catch (error) {
-            console.error('Drive download error:', error);
-            showToast('❌ Failed to download file from Drive', 'error');
-        }
+        showToast('Downloading file from Drive...', 'info');
+        await downloadDriveFile(fileId, fileName);
     }
 }
 
-async function downloadDriveFile(fileId, accessToken) {
-    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-    const response = await fetch(url, {
-        headers: {
-            'Authorization': `Bearer ${accessToken}`
-        }
-    });
+async function downloadDriveFile(fileId, fileName) {
+    try {
+        const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+            headers: {
+                'Authorization': `Bearer ${state.accessToken}`
+            }
+        });
 
-    if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        if (!response.ok) throw new Error('Download failed');
+
+        const blob = await response.blob();
+        const file = new File([blob], fileName, { type: blob.type });
+        handleFile(file);
+
+    } catch (error) {
+        console.error('Drive download error:', error);
+        showToast('Failed to download file', 'error');
     }
-
-    return await response.blob();
 }
 
-document.addEventListener('DOMContentLoaded', init);
-
-// Add spin animation
-const style = document.createElement('style');
-style.textContent = `@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`;
-document.head.appendChild(style);
+// Start App
+init();

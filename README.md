@@ -1,98 +1,78 @@
 # VoiceScribe - Speech to Text with Translation
 
-A beautiful, modern web application for speech-to-text transcription with automatic Bosnian to English translation.
+Real-time speech-to-text transcription with automatic Bosnian to English translation.
 
-## ✨ Features
+## Features
 
-- **Live Recording**: Real-time speech-to-text transcription
-- **Dual Language Support**: Bosnian 🇧🇦 and English 🇺🇸
-- **Automatic Translation**: Instant Bosnian to English translation while you speak
-- **File Upload**: Upload audio files for transcription (best results with live recording)
-- **Editable Transcripts**: Edit both original and translated text
-- **Export Options**: Copy to clipboard or download as text file
-- **Modern UI**: Glassmorphism design with smooth animations
-- **Mobile Friendly**: Fully responsive design
+- 🎤 **Live Recording** - Real-time transcription using Web Speech API
+- 📁 **File Upload** - Professional transcription using AssemblyAI
+- 🌐 **Translation** - Automatic Bosnian to English translation
+- ✨ **Modern UI** - Beautiful glassmorphism design
+- 📱 **Mobile Friendly** - Responsive design for all devices
 
-## 🎯 How to Use
+## Setup
 
-1. **Select Language**: Choose Bosnian or English from the dropdown
-2. **Live Recording Mode**:
-   - Click the microphone button
-   - Start speaking
-   - Watch as transcription and translation appear in real-time
-   - Click again to stop
-3. **File Upload Mode**:
-   - Click "Upload File" tab
-   - Drag & drop or select an audio file
-   - Note: Live recording mode recommended for best results
-4. **Edit & Export**:
-   - Edit transcriptions directly in the text boxes
-   - Copy both original and translation
-   - Download as a text file
+### 1. Get AssemblyAI API Key
 
-## 🚀 Live Demo
+1. Go to [AssemblyAI](https://www.assemblyai.com/)
+2. Sign up for a free account
+3. Copy your API key from the dashboard
 
-Visit [VoiceScribe](https://mfmqazi.github.io/voicescribe-app/) to try it out!
+### 2. Configure the App
 
-## 💻 Technology
+Open `app.js` and replace the placeholder with your API key:
 
-- **Web Speech API** for live transcription
-- **MyMemory Translation API** for Bosnian to English translation
-- **Vanilla JavaScript** - No frameworks needed
-- **Modern CSS** with glassmorphism and animations
+```javascript
+const ASSEMBLYAI_API_KEY = 'YOUR_ASSEMBLYAI_API_KEY'; // Replace with your actual key
+```
 
-## 🛠️ Installation
+### 3. Run Locally
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/mfmqazi/voicescribe-app.git
-   ```
+```bash
+npm install
+npm run dev
+```
 
-2. Open `index.html` in a modern browser (Chrome, Edge, or Safari recommended)
+Open `http://localhost:5173/`
 
-That's it! No build process needed.
+## Usage
 
-## 📝 Browser Support
+### Live Recording
+1. Click "Live Recording" tab
+2. Select language (Bosnian or English)
+3. Click the microphone button to start
+4. Speak naturally
+5. Translation appears in real-time (for Bosnian)
 
-- ✅ Chrome (recommended)
-- ✅ Microsoft Edge
-- ✅ Safari
-- ⚠️ Firefox (limited Web Speech API support)
+### File Upload
+1. Click "Upload File" tab
+2. Select language
+3. Drag & drop or click to select an audio file
+4. Click "Transcribe Audio"
+5. Wait for processing (cloud-based, high quality)
 
-## 🎨 Features
+## Supported Audio Formats
 
-- Real-time transcription as you speak
-- Automatic translation from Bosnian to English
-- Dual-column view showing original and translated text
-- Word and character count
-- Editable transcripts
-- Download transcripts as .txt files
-- Beautiful dark theme with gradients
-- Smooth animations and micro-interactions
+- MP3
+- WAV
+- M4A
+- OGG
 
-## ⚡ Performance
+## Technology Stack
 
-- Lightweight - less than 100KB total
-- No external dependencies
-- Fast load times
-- Runs entirely in the browser
+- **Frontend**: HTML, CSS, JavaScript (Vanilla)
+- **Live Recording**: Web Speech API
+- **File Transcription**: AssemblyAI API
+- **Translation**: AssemblyAI Translation API
+- **Build Tool**: Vite
 
-## 🔒 Privacy
+## Free Tier Limits
 
-All transcription happens in your browser using the Web Speech API. Translation uses the free MyMemory API. No data is stored on any server.
+AssemblyAI free tier includes:
+- 5 hours of audio per month
+- All features included
+- No credit card required
 
-## 📄 License
+## License
 
-MIT License - Feel free to use this project for personal or commercial purposes.
-
-## 🤝 Contributing
-
-Contributions are welcome! Feel free to open issues or submit pull requests.
-
-## 👨‍💻 Author
-
-Built with ❤️ using Web Speech API & Translation Services
-
----
-
-**Note**: For best results, use the live recording feature. File upload transcription has limitations due to Web Speech API constraints.
+MIT

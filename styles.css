@@ -234,27 +234,6 @@ body::before {
 
 /* ========================================
    RECORD MODE
-   ======================================== */
-.record-container {
-    background: rgba(255, 255, 255, 0.03);
-    backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: var(--radius-xl);
-    padding: var(--spacing-2xl);
-    text-align: center;
-    box-shadow: var(--shadow-md);
-}
-
-.record-visualizer {
-    position: relative;
-    width: 200px;
-    height: 200px;
-    margin: 0 auto var(--spacing-xl);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
 .pulse-ring {
     position: absolute;
     width: 100%;
@@ -790,22 +769,8 @@ body::before {
 /* ========================================
    RESPONSIVE
    ======================================== */
-@media (max-width: 768px) {
-    .app-container {
-        padding: var(--spacing-md);
-    }
-
-    .transcript-columns {
-        grid-template-columns: 1fr;
-    }
-
-    .record-visualizer {
-        width: 150px;
-        height: 150px;
-    }
-
-    .record-btn {
-        width: 100px;
-        height: 100px;
-    }
+.record-btn {
+    width: 100px;
+    height: 100px;
+}
 }
