@@ -100,11 +100,16 @@ function init() {
     updateStats();
     updateLanguageLabels();
     loadSettings();
-
-    // Load Google APIs
-    if (typeof gapi !== 'undefined') gapi.load('picker', onPickerApiLoad);
-    if (typeof google !== 'undefined') onGisLoaded();
 }
+
+// Global callbacks for Google API loading (called from HTML script tags)
+window.gapiLoaded = function () {
+    gapi.load('picker', onPickerApiLoad);
+};
+
+window.gisLoaded = function () {
+    onGisLoaded();
+};
 
 function setupEventListeners() {
     // Mode Switching
