@@ -272,6 +272,22 @@
 
     <!-- Load Google Drive configuration (not committed to Git) -->
     <script src="config.js"></script>
+
+    <!-- Define callbacks before loading APIs -->
+    <script>
+        window.isGapiLoaded = false;
+        window.isGisLoaded = false;
+
+        function gapiLoaded() {
+            window.isGapiLoaded = true;
+            window.dispatchEvent(new Event('gapi-loaded'));
+        }
+
+        function gisLoaded() {
+            window.isGisLoaded = true;
+            window.dispatchEvent(new Event('gis-loaded'));
+        }
+    </script>
     <script async defer src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
     <script async defer src="https://accounts.google.com/gsi/client" onload="gisLoaded()"></script>
     <script type="module" src="app.js"></script>

@@ -65,7 +65,7 @@ const elements = {
     googleDriveBtn: document.getElementById('googleDriveBtn'),
 
     // Language & Settings
-    languageSelect: document.getElementById('language'),
+    languageSelect: document.getElementById('languageSelect'),
     originalLanguageLabel: document.getElementById('originalLanguageLabel'),
     settingsBtn: document.getElementById('settingsBtn'),
     settingsModal: document.getElementById('settingsModal'),
@@ -100,16 +100,22 @@ function init() {
     updateStats();
     updateLanguageLabels();
     loadSettings();
+
+    // Check if Google APIs are already loaded, otherwise wait for events
+    if (window.isGapiLoaded) {
+        gapi.load('picker', onPickerApiLoad);
+    } else {
+        window.addEventListener('gapi-loaded', () => gapi.load('picker', onPickerApiLoad));
+    }
+
+    if (window.isGisLoaded) {
+        onGisLoaded();
+    } else {
+        window.addEventListener('gis-loaded', onGisLoaded);
+    }
 }
 
-// Global callbacks for Google API loading (called from HTML script tags)
-window.gapiLoaded = function () {
-    gapi.load('picker', onPickerApiLoad);
-};
 
-window.gisLoaded = function () {
-    onGisLoaded();
-};
 
 function setupEventListeners() {
     // Mode Switching
@@ -726,6 +732,10 @@ function handleGoogleDriveAuth() {
 }
 
 function createPicker() {
+    if (!state.pickerInited) {
+        showToast('Google Picker API not ready yet. Please try again in a moment.', 'error');
+        return;
+    }
     const view = new google.picker.View(google.picker.ViewId.DOCS);
     view.setMimeTypes('audio/*');
 
