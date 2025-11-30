@@ -1,10 +1,11 @@
 // ========================================
 // GOOGLE DRIVE CONFIGURATION
 // ========================================
-// ⚠️ IMPORTANT: You must replace these with your own keys from Google Cloud Console
-const GOOGLE_API_KEY = 'YOUR_API_KEY';
-const GOOGLE_CLIENT_ID = 'YOUR_CLIENT_ID';
-const GOOGLE_APP_ID = 'YOUR_PROJECT_NUMBER';
+// Load from config.js (not committed to Git)
+// If config.js doesn't exist, fallback to placeholders
+const GOOGLE_API_KEY = window.GOOGLE_DRIVE_CONFIG?.API_KEY || 'YOUR_API_KEY';
+const GOOGLE_CLIENT_ID = window.GOOGLE_DRIVE_CONFIG?.CLIENT_ID || 'YOUR_CLIENT_ID';
+const GOOGLE_APP_ID = window.GOOGLE_DRIVE_CONFIG?.APP_ID || 'YOUR_PROJECT_NUMBER';
 
 
 // ========================================
